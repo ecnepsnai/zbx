@@ -67,7 +67,7 @@ func consumeReader(agent Agent, r io.Reader) []byte {
 		return nil
 	}
 	if bytes.Compare([]byte("ZBXD"), headerBuf) != 0 {
-		log.Warn("Unrecognized request header '%x'", headerBuf)
+		// Don't recognize this header, ignore
 		return nil
 	}
 
