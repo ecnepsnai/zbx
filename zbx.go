@@ -2,10 +2,7 @@
 Package zbx is a Zabbix Agent implementation in golang that allows your application
 to act as a zabbix agent and respond to simple requests.
 
-It is compatible with Zabbix version 4.0 and 4.2 only. It does not support
-TLS or PSK encryption at this time.
-
-An example of how to implement an agent can be seen in cmd/zbx/main.go
+It is compatible with Zabbix version 4 and newer.
 */
 package zbx
 
@@ -21,17 +18,20 @@ import (
 
 var log *logtic.Source
 
-// Agent describes the interface for a Zabbix Agent
-type Agent interface {
-	// GetItem is called for each individual request from the zabbix server/proxy for an item
-	// Your value will be encoded as a string and returned to the server
-	// If error is not nil, it will be sent back to the server
-	// If (nil, nil) is returned then it is assumed the key is unknown.
-	GetItem(key string) (interface{}, error)
-}
+// ItemFunc describes the method invoked when the Zabbix Server (or proxy) is requesting
+// an item from this agent. The returned interface be encoded as a string and returned to the server.
+//
+// If error is not nil, it will be sent back to the server. If (nil, nil) is returned then it is assumed
+// the key is unknown.
+type ItemFunc func(key string) (interface{}, error)
 
-// Start start the zabbix agent. Will block and return on fatal error
-func Start(agent Agent, address string) error {
+// Start the Zabbix agent on the specified address. Will block and always return on error.
+// Will panic if itemFunc is nil.
+func Start(itemFunc ItemFunc, address string) error {
+	if itemFunc == nil {
+		panic("itemFunc is nil")
+	}
+
 	log = logtic.Connect("zbx")
 	l, err := net.Listen("tcp", address)
 	if err != nil {
@@ -42,15 +42,15 @@ func Start(agent Agent, address string) error {
 		if err != nil {
 			return err
 		}
-		go newConnection(agent, conn)
+		go newConnection(itemFunc, conn)
 	}
 }
 
-func newConnection(agent Agent, conn net.Conn) {
+func newConnection(itemFunc ItemFunc, conn net.Conn) {
 	who := conn.RemoteAddr().String()
 	log.Debug("New connection from '%s'", who)
 
-	reply := consumeReader(agent, conn)
+	reply := consumeReader(itemFunc, conn)
 	if reply != nil {
 		conn.Write(reply)
 	}
@@ -59,7 +59,7 @@ func newConnection(agent Agent, conn net.Conn) {
 	log.Debug("Closing connection")
 }
 
-func consumeReader(agent Agent, r io.Reader) []byte {
+func consumeReader(itemFunc ItemFunc, r io.Reader) []byte {
 	// Read the first 4 bytes of the header, must be 'ZBXD'
 	headerBuf := make([]byte, 4)
 	if _, err := r.Read(headerBuf); err != nil && err != io.EOF {
@@ -120,7 +120,7 @@ func consumeReader(agent Agent, r io.Reader) []byte {
 	key := string(keyBuf)
 
 	log.Debug("Server requesting key '%s'", key)
-	respObj, err := agent.GetItem(key)
+	respObj, err := itemFunc(key)
 
 	var data []byte
 	if err != nil {
