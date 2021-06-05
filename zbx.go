@@ -2,7 +2,7 @@
 Package zbx is a Zabbix Agent implementation in golang that allows your application
 to act as a zabbix agent and respond to simple requests.
 
-It is compatible with Zabbix version 4 and newer.
+It is compatible with Zabbix version 4 and newer, but it does not support encryption or compression.
 */
 package zbx
 
@@ -16,7 +16,7 @@ import (
 	"github.com/ecnepsnai/logtic"
 )
 
-var log *logtic.Source
+var log = logtic.Connect("zbx")
 
 // ItemFunc describes the method invoked when the Zabbix Server (or proxy) is requesting
 // an item from this agent. The returned interface be encoded as a string and returned to the server.
@@ -32,7 +32,6 @@ func Start(itemFunc ItemFunc, address string) error {
 		panic("itemFunc is nil")
 	}
 
-	log = logtic.Connect("zbx")
 	l, err := net.Listen("tcp", address)
 	if err != nil {
 		return err
@@ -48,25 +47,36 @@ func Start(itemFunc ItemFunc, address string) error {
 
 func newConnection(itemFunc ItemFunc, conn net.Conn) {
 	who := conn.RemoteAddr().String()
-	log.Debug("New connection from '%s'", who)
+	log.PDebug("New connection", map[string]interface{}{
+		"remote_address": who,
+	})
 
 	reply := consumeReader(itemFunc, conn)
 	if reply != nil {
-		conn.Write(reply)
+		if _, err := conn.Write(reply); err != nil {
+			log.PError("Error writing reply", map[string]interface{}{
+				"remote_addr": who,
+				"error":       err.Error(),
+			})
+		}
 	}
 
 	conn.Close()
-	log.Debug("Closing connection")
+	log.PDebug("Closing connection", map[string]interface{}{
+		"remote_address": who,
+	})
 }
 
 func consumeReader(itemFunc ItemFunc, r io.Reader) []byte {
 	// Read the first 4 bytes of the header, must be 'ZBXD'
 	headerBuf := make([]byte, 4)
 	if _, err := r.Read(headerBuf); err != nil && err != io.EOF {
-		fmt.Printf("Error: %s\n", err.Error())
+		log.PError("Error reading request header", map[string]interface{}{
+			"error": err.Error(),
+		})
 		return nil
 	}
-	if bytes.Compare([]byte("ZBXD"), headerBuf) != 0 {
+	if !bytes.Equal(headerBuf, []byte("ZBXD")) {
 		// Don't recognize this header, ignore
 		return nil
 	}
@@ -75,33 +85,47 @@ func consumeReader(itemFunc ItemFunc, r io.Reader) []byte {
 	// Note that this library does not support compression
 	flagsBuf := make([]byte, 1)
 	if _, err := r.Read(flagsBuf); err != nil && err != io.EOF {
-		fmt.Printf("Error: %s\n", err.Error())
+		log.PError("Error reading request flags", map[string]interface{}{
+			"error": err.Error(),
+		})
 		return nil
 	}
-	if bytes.Compare([]byte("\x01"), flagsBuf) != 0 {
-		log.Warn("Unsupported flags '%x'", flagsBuf)
+	if !bytes.Equal(flagsBuf, []byte("\x01")) {
+		log.PWarn("Unsupported request flags", map[string]interface{}{
+			"flags": flagsBuf,
+		})
 		return nil
 	}
 
 	// Read 4 bytes for the content length
 	keyLenBuf := make([]byte, 4)
 	if _, err := r.Read(keyLenBuf); err != nil && err != io.EOF {
-		fmt.Printf("Error: %s\n", err.Error())
+		log.PError("Error reading request body", map[string]interface{}{
+			"error": err.Error(),
+		})
 		return nil
 	}
 	dataLength := binary.LittleEndian.Uint32(keyLenBuf)
 
-	log.Debug("Request data length: %dB", dataLength)
+	log.PDebug("Request length", map[string]interface{}{
+		"size_b": dataLength,
+		"size":   logtic.FormatBytesB(uint64(dataLength)),
+	})
 	// Protocol is limited to 128MiB
 	if dataLength >= 134217728 {
-		log.Error("Oversized request. Request size %dB, max 134217728B", dataLength)
+		log.PError("Oversized request", map[string]interface{}{
+			"max_size":     134217728,
+			"request_size": dataLength,
+		})
 		return nil
 	}
 
 	// Read 4 bytes for the reserved portion of the header, but don't do anything with it
 	reservedBuf := make([]byte, 4)
 	if _, err := r.Read(reservedBuf); err != nil && err != io.EOF {
-		fmt.Printf("Error: %s\n", err.Error())
+		log.PError("Error reading request header", map[string]interface{}{
+			"error": err.Error(),
+		})
 		return nil
 	}
 
@@ -109,32 +133,48 @@ func consumeReader(itemFunc ItemFunc, r io.Reader) []byte {
 	keyBuf := make([]byte, dataLength)
 	realLen, err := r.Read(keyBuf)
 	if err != nil && err != io.EOF {
-		fmt.Printf("Error: %s\n", err.Error())
+		log.PError("Error reading request key", map[string]interface{}{
+			"error": err.Error(),
+		})
 		return nil
 	}
 	if uint32(realLen) != dataLength {
-		log.Error("Incorrect data size from request. Reported %d actual %d", dataLength, realLen)
+		log.PError("Incorrect request size", map[string]interface{}{
+			"reported": dataLength,
+			"actual":   realLen,
+		})
 		return nil
 	}
 
 	key := string(keyBuf)
 
-	log.Debug("Server requesting key '%s'", key)
+	log.PDebug("Server requested key", map[string]interface{}{
+		"key": key,
+	})
 	respObj, err := itemFunc(key)
 
 	var data []byte
 	if err != nil {
 		// Error from the agent
-		log.Error("Error getting key '%s' from agent: %s", key, err.Error())
+		log.PError("Error getting key", map[string]interface{}{
+			"key":   key,
+			"error": err.Error(),
+		})
 		data = []byte("ZBX_NOTSUPPORTED\x00" + err.Error())
 	} else if respObj == nil {
 		// No error but no reply, key not found
-		log.Warn("Nil response for key '%s'", key)
+		log.PWarn("No response for key", map[string]interface{}{
+			"key": key,
+		})
 		data = []byte("ZBX_NOTSUPPORTED\x00Item key unknown")
 	} else {
 		// Format the reply as a string
+		log.PDebug("Response for key", map[string]interface{}{
+			"data":     data,
+			"length_b": len(data),
+			"key":      key,
+		})
 		data = []byte(fmt.Sprintf("%v", respObj))
-		log.Debug("Response '%s' (%d) for key '%s'", data, len(data), key)
 	}
 
 	length := len(data)
