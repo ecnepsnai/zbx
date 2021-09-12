@@ -2,7 +2,7 @@ module github.com/ecnepsnai/zbx
 
 go 1.17
 
-require github.com/ecnepsnai/logtic v1.6.1
+require github.com/ecnepsnai/logtic v1.8.1
 
 require (
 	github.com/fatih/color v1.12.0 // indirect

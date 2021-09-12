@@ -16,7 +16,7 @@ import (
 	"github.com/ecnepsnai/logtic"
 )
 
-var log = logtic.Connect("zbx")
+var log = logtic.Log.Connect("zbx")
 
 // ItemFunc describes the method invoked when the Zabbix Server (or proxy) is requesting
 // an item from this agent. The returned interface be encoded as a string and returned to the server.
