@@ -1,3 +1,3 @@
 vendor/
-cmd/zbx/*
-!cmd/zbx/*.go
+cmd/zabbix-query/*
+!cmd/zabbix-query/*.go
