@@ -89,6 +89,19 @@ func requestForKey(key string) []byte {
 	return request
 }
 
+func TestItemFuncNil(t *testing.T) {
+	t.Parallel()
+
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatalf("No panic when one expected")
+		}
+	}()
+
+	zbx.Start(nil, "127.0.0.1")
+}
+
 func TestAgentPing(t *testing.T) {
 	t.Parallel()
 
@@ -108,6 +121,7 @@ func TestAgentPing(t *testing.T) {
 		t.Errorf("Unexpected reply from server. Expected:\n%x\nGot:\n%x", expectedResponse, reply)
 	}
 }
+
 func TestAgentError(t *testing.T) {
 	t.Parallel()
 
@@ -160,6 +174,22 @@ func TestBadHeader(t *testing.T) {
 	}
 	if _, err := io.ReadAll(c); err == nil {
 		t.Fatalf("No error seen when one expected")
+	}
+}
+
+func TestBadFlags(t *testing.T) {
+	t.Parallel()
+
+	c, err := retryDial(socketAddr)
+	if err != nil {
+		t.Fatalf("Error connecting to zabbix agent: %s", err.Error())
+	}
+	if _, err := c.Write([]byte("ZBXD\x02")); err != nil {
+		t.Fatalf("Error writing request: %s", err.Error())
+	}
+	reply, _ := io.ReadAll(c)
+	if len(reply) > 0 {
+		t.Fatalf("Unexpected reply: %s", reply)
 	}
 }
 

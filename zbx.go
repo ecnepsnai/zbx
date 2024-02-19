@@ -2,12 +2,14 @@
 Package zbx is a Zabbix Agent implementation in golang that allows your application
 to act as a zabbix agent and respond to simple requests.
 
-It is compatible with Zabbix version 4 and newer, but it does not support encryption or compression.
+It is compatible with Zabbix version 4 and newer, however it does not support compression and only
+supports certificate based authentication.
 */
 package zbx
 
 import (
 	"bytes"
+	"crypto/tls"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -25,6 +27,29 @@ var log = logtic.Log.Connect("zbx")
 // the key is unknown.
 type ItemFunc func(key string) (interface{}, error)
 
+// StartTLS will start the Zabbix agent on the specified address with TLS. The agent will present
+// the given certificate to the server when connected.
+// Will panic if itemFunc is nil.
+func StartTLS(itemFunc ItemFunc, address string, certificate tls.Certificate) error {
+	if itemFunc == nil {
+		panic("itemFunc is nil")
+	}
+
+	config := &tls.Config{
+		Certificates: []tls.Certificate{certificate},
+	}
+
+	l, err := tls.Listen("tcp", address, config)
+	if err != nil {
+		return err
+	}
+	log.PDebug("Starting TLS agent", map[string]interface{}{
+		"address": address,
+	})
+	StartListener(itemFunc, l)
+	return nil
+}
+
 // Start the Zabbix agent on the specified address. Will block and always return on error.
 // Will panic if itemFunc is nil.
 func Start(itemFunc ItemFunc, address string) error {
@@ -36,10 +61,22 @@ func Start(itemFunc ItemFunc, address string) error {
 	if err != nil {
 		return err
 	}
+	log.PDebug("Starting agent", map[string]interface{}{
+		"address": address,
+	})
+	StartListener(itemFunc, l)
+	return nil
+}
+
+// Start the Zabbix agent on the specified listener.
+func StartListener(itemFunc ItemFunc, l net.Listener) {
 	for {
 		conn, err := l.Accept()
 		if err != nil {
-			return err
+			log.PError("Error accepting connection", map[string]interface{}{
+				"error": err.Error(),
+			})
+			continue
 		}
 		go newConnection(itemFunc, conn)
 	}
