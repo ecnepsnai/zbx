@@ -15,6 +15,8 @@ supports certificate based authentication.
 
 ### Basic Agent
 
+This sets up a basic agent with no encryption.
+
 ```go
 // This function is called for each incoming request from the Zabbix server
 getItem := func(itemKey string) (interface{}, error) {
@@ -33,6 +35,9 @@ zbx.Start(getItem, "0.0.0.0:10050")
 ```
 
 ### Agent with TLS
+
+This sets up a certificate-based TLS agent. This package doesn't support PSK-based TLS, as crypto/tls
+does not support this feature, [yet](https://github.com/golang/go/issues/6379).
 
 ```go
 // This function is called for each incoming request from the Zabbix server

@@ -200,9 +200,6 @@ func consumeReader(itemFunc ItemFunc, r io.Reader) []byte {
 		data = []byte("ZBX_NOTSUPPORTED\x00" + err.Error())
 	} else if respObj == nil {
 		// No error but no reply, key not found
-		log.PWarn("No response for key", map[string]interface{}{
-			"key": key,
-		})
 		data = []byte("ZBX_NOTSUPPORTED\x00Item key unknown")
 	} else {
 		// Format the reply as a string
