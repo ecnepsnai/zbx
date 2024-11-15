@@ -36,6 +36,9 @@ func TestMain(m *testing.M) {
 		"agent.version": func() (interface{}, error) {
 			return "4.0.0", nil
 		},
+		"panic": func() (interface{}, error) {
+			panic("Ah!")
+		},
 	}
 	go zbx.Start(func(key string) (interface{}, error) {
 		f, ok := items[key]
@@ -149,6 +152,26 @@ func TestUnknownKey(t *testing.T) {
 		t.Fatalf("Error connecting to zabbix agent: %s", err.Error())
 	}
 	if _, err := c.Write(requestForKey("not.a.key")); err != nil {
+		t.Fatalf("Error writing request: %s", err.Error())
+	}
+	reply, err := io.ReadAll(c)
+	if err != nil {
+		t.Fatalf("Error reading reply: %s", err.Error())
+	}
+	expectedResponse := []byte("\x5A\x42\x58\x44\x01\x21\x00\x00\x00\x00\x00\x00\x00\x5A\x42\x58\x5F\x4E\x4F\x54\x53\x55\x50\x50\x4F\x52\x54\x45\x44\x00\x49\x74\x65\x6D\x20\x6B\x65\x79\x20\x75\x6E\x6B\x6E\x6F\x77\x6E")
+	if !bytes.Equal(reply, expectedResponse) {
+		t.Errorf("Unexpected reply from server. Expected:\n%x\nGot:\n%x", expectedResponse, reply)
+	}
+}
+
+func TestKeyPanic(t *testing.T) {
+	t.Parallel()
+
+	c, err := retryDial(socketAddr)
+	if err != nil {
+		t.Fatalf("Error connecting to zabbix agent: %s", err.Error())
+	}
+	if _, err := c.Write(requestForKey("panic")); err != nil {
 		t.Fatalf("Error writing request: %s", err.Error())
 	}
 	reply, err := io.ReadAll(c)

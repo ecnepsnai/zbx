@@ -2,8 +2,8 @@
 Package zbx is a Zabbix Agent implementation in golang that allows your application
 to act as a zabbix agent and respond to simple requests.
 
-It is compatible with Zabbix version 4 and newer, however it does not support compression and only
-supports certificate based authentication.
+It is compatible with Zabbix version 4 and newer, however it does not support compression or TLS PSK
+authentication.
 */
 package zbx
 
@@ -22,10 +22,14 @@ import (
 var ErrorLog io.Writer = os.Stderr
 
 // ItemFunc describes the method invoked when the Zabbix Server (or proxy) is requesting
-// an item from this agent. The returned interface be encoded as a string and returned to the server.
+// an item from this agent. The returned interface be encoded as a string and returned to the
+// server.
 //
-// If error is not nil, it will be sent back to the server. If (nil, nil) is returned then it is assumed
-// the key is unknown.
+// If error is not nil, it will be sent back to the server. If (nil, nil) is returned then it is
+// assumed the key is unknown.
+//
+// Any calls to `panic()` will be recovered from and written to ErrorLog and the server will act as
+// if the key was unknown.
 type ItemFunc func(key string) (interface{}, error)
 
 // StartTLS will start the Zabbix agent on the specified address with TLS. The agent will present
@@ -147,7 +151,7 @@ func consumeReader(itemFunc ItemFunc, r io.Reader) []byte {
 
 	key := string(keyBuf)
 
-	respObj, err := itemFunc(key)
+	respObj, err := safeCallItemFunc(itemFunc, key)
 
 	var data []byte
 	if err != nil {
@@ -187,4 +191,20 @@ func consumeReader(itemFunc ItemFunc, r io.Reader) []byte {
 	}
 
 	return reply
+}
+
+func safeCallItemFunc(itemFunc ItemFunc, key string) (interface{}, error) {
+	defer func() {
+		if r := recover(); r != nil {
+			errorWrite("Recovered from panic calling function for item %s: %s", key, r)
+			ErrorLog.Write(debug.Stack())
+		}
+	}()
+
+	return itemFunc(key)
+}
+
+func errorWrite(format string, a ...interface{}) {
+	ErrorLog.Write([]byte(fmt.Sprintf(format, a...)))
+	ErrorLog.Write([]byte("\n"))
 }
