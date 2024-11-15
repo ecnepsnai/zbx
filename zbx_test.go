@@ -10,17 +10,16 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ecnepsnai/logtic"
 	"github.com/ecnepsnai/zbx"
 )
 
 const socketAddr = "127.0.0.1:8765"
 
 func TestMain(m *testing.M) {
+	zbx.ErrorLog = io.Discard
 	for _, arg := range os.Args {
 		if arg == "-test.v=true" {
-			logtic.Log.Level = logtic.LevelDebug
-			logtic.Log.Open()
+			zbx.ErrorLog = os.Stderr
 		}
 	}
 

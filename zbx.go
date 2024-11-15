@@ -14,11 +14,12 @@ import (
 	"fmt"
 	"io"
 	"net"
-
-	"github.com/ecnepsnai/logtic"
+	"os"
+	"runtime/debug"
 )
 
-var log = logtic.Log.Connect("zbx")
+// ErrorLog is the writer that error messages are written to. By default this is stderr.
+var ErrorLog io.Writer = os.Stderr
 
 // ItemFunc describes the method invoked when the Zabbix Server (or proxy) is requesting
 // an item from this agent. The returned interface be encoded as a string and returned to the server.
@@ -43,9 +44,6 @@ func StartTLS(itemFunc ItemFunc, address string, certificate tls.Certificate) er
 	if err != nil {
 		return err
 	}
-	log.PDebug("Starting TLS agent", map[string]interface{}{
-		"address": address,
-	})
 	StartListener(itemFunc, l)
 	return nil
 }
@@ -61,9 +59,6 @@ func Start(itemFunc ItemFunc, address string) error {
 	if err != nil {
 		return err
 	}
-	log.PDebug("Starting agent", map[string]interface{}{
-		"address": address,
-	})
 	StartListener(itemFunc, l)
 	return nil
 }
@@ -73,9 +68,7 @@ func StartListener(itemFunc ItemFunc, l net.Listener) {
 	for {
 		conn, err := l.Accept()
 		if err != nil {
-			log.PError("Error accepting connection", map[string]interface{}{
-				"error": err.Error(),
-			})
+			errorWrite("Error accepting connection: %s", fmt.Sprintf("error='%s'", err.Error()))
 			continue
 		}
 		go newConnection(itemFunc, conn)
@@ -84,33 +77,22 @@ func StartListener(itemFunc ItemFunc, l net.Listener) {
 
 func newConnection(itemFunc ItemFunc, conn net.Conn) {
 	who := conn.RemoteAddr().String()
-	log.PDebug("New connection", map[string]interface{}{
-		"remote_address": who,
-	})
 
 	reply := consumeReader(itemFunc, conn)
 	if reply != nil {
 		if _, err := conn.Write(reply); err != nil {
-			log.PError("Error writing reply", map[string]interface{}{
-				"remote_addr": who,
-				"error":       err.Error(),
-			})
+			errorWrite("Error writing reply: %s,%s", fmt.Sprintf("remote_addr='%s'", who), fmt.Sprintf("error='%s'", err.Error()))
 		}
 	}
 
 	conn.Close()
-	log.PDebug("Closing connection", map[string]interface{}{
-		"remote_address": who,
-	})
 }
 
 func consumeReader(itemFunc ItemFunc, r io.Reader) []byte {
 	// Read the first 4 bytes of the header, must be 'ZBXD'
 	headerBuf := make([]byte, 4)
 	if _, err := r.Read(headerBuf); err != nil && err != io.EOF {
-		log.PError("Error reading request header", map[string]interface{}{
-			"error": err.Error(),
-		})
+		errorWrite("Error reading request header: %s", fmt.Sprintf("error='%s'", err.Error()))
 		return nil
 	}
 	if !bytes.Equal(headerBuf, []byte("ZBXD")) {
@@ -122,47 +104,32 @@ func consumeReader(itemFunc ItemFunc, r io.Reader) []byte {
 	// Note that this library does not support compression
 	flagsBuf := make([]byte, 1)
 	if _, err := r.Read(flagsBuf); err != nil && err != io.EOF {
-		log.PError("Error reading request flags", map[string]interface{}{
-			"error": err.Error(),
-		})
+		errorWrite("Error reading request flags: %s", fmt.Sprintf("error='%s'", err.Error()))
 		return nil
 	}
 	if !bytes.Equal(flagsBuf, []byte("\x01")) {
-		log.PWarn("Unsupported request flags", map[string]interface{}{
-			"flags": flagsBuf,
-		})
+		errorWrite("Unsupported request flags: %s", fmt.Sprintf("flags='%s'", fmt.Sprintf("%x", flagsBuf)))
 		return nil
 	}
 
 	// Read 4 bytes for the content length
 	keyLenBuf := make([]byte, 4)
 	if _, err := r.Read(keyLenBuf); err != nil && err != io.EOF {
-		log.PError("Error reading request body", map[string]interface{}{
-			"error": err.Error(),
-		})
+		errorWrite("Error reading request body: %s", fmt.Sprintf("error='%s'", err.Error()))
 		return nil
 	}
 	dataLength := binary.LittleEndian.Uint32(keyLenBuf)
 
-	log.PDebug("Request length", map[string]interface{}{
-		"size_b": dataLength,
-		"size":   logtic.FormatBytesB(uint64(dataLength)),
-	})
 	// Protocol is limited to 128MiB
 	if dataLength >= 134217728 {
-		log.PError("Oversized request", map[string]interface{}{
-			"max_size":     134217728,
-			"request_size": dataLength,
-		})
+		errorWrite("Rejecting oversides request: %s,%s", fmt.Sprintf("max_size=%d", 134217728), fmt.Sprintf("request_size=%d", dataLength))
 		return nil
 	}
 
 	// Read 4 bytes for the reserved portion of the header, but don't do anything with it
 	reservedBuf := make([]byte, 4)
 	if _, err := r.Read(reservedBuf); err != nil && err != io.EOF {
-		log.PError("Error reading request header", map[string]interface{}{
-			"error": err.Error(),
-		})
+		errorWrite("Error reading request header: %s", fmt.Sprintf("error='%s'", err.Error()))
 		return nil
 	}
 
@@ -170,44 +137,28 @@ func consumeReader(itemFunc ItemFunc, r io.Reader) []byte {
 	keyBuf := make([]byte, dataLength)
 	realLen, err := r.Read(keyBuf)
 	if err != nil && err != io.EOF {
-		log.PError("Error reading request key", map[string]interface{}{
-			"error": err.Error(),
-		})
+		errorWrite("Error reading request key: %s", fmt.Sprintf("error='%s'", err.Error()))
 		return nil
 	}
 	if uint32(realLen) != dataLength {
-		log.PError("Incorrect request size", map[string]interface{}{
-			"reported": dataLength,
-			"actual":   realLen,
-		})
+		errorWrite("Incorrect request size: %s,%s", fmt.Sprintf("reported=%d", dataLength), fmt.Sprintf("reported=%d", realLen))
 		return nil
 	}
 
 	key := string(keyBuf)
 
-	log.PDebug("Server requested key", map[string]interface{}{
-		"key": key,
-	})
 	respObj, err := itemFunc(key)
 
 	var data []byte
 	if err != nil {
 		// Error from the agent
-		log.PError("Error getting key", map[string]interface{}{
-			"key":   key,
-			"error": err.Error(),
-		})
+		errorWrite("Error reading request key: %s,%s", fmt.Sprintf("key='%s'", key), fmt.Sprintf("error='%s'", err.Error()))
 		data = []byte("ZBX_NOTSUPPORTED\x00" + err.Error())
 	} else if respObj == nil {
 		// No error but no reply, key not found
 		data = []byte("ZBX_NOTSUPPORTED\x00Item key unknown")
 	} else {
 		// Format the reply as a string
-		log.PDebug("Response for key", map[string]interface{}{
-			"data":     data,
-			"length_b": len(data),
-			"key":      key,
-		})
 		data = []byte(fmt.Sprintf("%v", respObj))
 	}
 
