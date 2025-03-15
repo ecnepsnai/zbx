@@ -8,9 +8,7 @@ authentication.
 package zbx
 
 import (
-	"bytes"
 	"crypto/tls"
-	"encoding/binary"
 	"fmt"
 	"io"
 	"net"
@@ -84,7 +82,7 @@ func newConnection(itemFunc ItemFunc, conn net.Conn) {
 
 	reply := consumeReader(itemFunc, conn)
 	if reply != nil {
-		if _, err := conn.Write(reply); err != nil {
+		if _, err := sendZabbixMessage(conn, reply); err != nil {
 			errorWrite("Error writing reply: %s,%s", fmt.Sprintf("remote_addr='%s'", who), fmt.Sprintf("error='%s'", err.Error()))
 		}
 	}
@@ -93,104 +91,25 @@ func newConnection(itemFunc ItemFunc, conn net.Conn) {
 }
 
 func consumeReader(itemFunc ItemFunc, r io.Reader) []byte {
-	// Read the first 4 bytes of the header, must be 'ZBXD'
-	headerBuf := make([]byte, 4)
-	if _, err := r.Read(headerBuf); err != nil && err != io.EOF {
-		errorWrite("Error reading request header: %s", fmt.Sprintf("error='%s'", err.Error()))
+	keyNameBuf, err := readZabbixMessage(r)
+	if err != nil {
+		errorWrite("Error reading message: %s", err.Error())
 		return nil
 	}
-	if !bytes.Equal(headerBuf, []byte("ZBXD")) {
-		// Don't recognize this header, ignore
-		return nil
-	}
-
-	// Read 1 byte of the flags
-	// Note that this library does not support compression
-	flagsBuf := make([]byte, 1)
-	if _, err := r.Read(flagsBuf); err != nil && err != io.EOF {
-		errorWrite("Error reading request flags: %s", fmt.Sprintf("error='%s'", err.Error()))
-		return nil
-	}
-	if !bytes.Equal(flagsBuf, []byte("\x01")) {
-		errorWrite("Unsupported request flags: %s", fmt.Sprintf("flags='%s'", fmt.Sprintf("%x", flagsBuf)))
-		return nil
-	}
-
-	// Read 4 bytes for the content length
-	keyLenBuf := make([]byte, 4)
-	if _, err := r.Read(keyLenBuf); err != nil && err != io.EOF {
-		errorWrite("Error reading request body: %s", fmt.Sprintf("error='%s'", err.Error()))
-		return nil
-	}
-	dataLength := binary.LittleEndian.Uint32(keyLenBuf)
-
-	// Protocol is limited to 128MiB
-	if dataLength >= 134217728 {
-		errorWrite("Rejecting oversides request: %s,%s", fmt.Sprintf("max_size=%d", 134217728), fmt.Sprintf("request_size=%d", dataLength))
-		return nil
-	}
-
-	// Read 4 bytes for the reserved portion of the header, but don't do anything with it
-	reservedBuf := make([]byte, 4)
-	if _, err := r.Read(reservedBuf); err != nil && err != io.EOF {
-		errorWrite("Error reading request header: %s", fmt.Sprintf("error='%s'", err.Error()))
-		return nil
-	}
-
-	// Read n bytes for the key (n=data length)
-	keyBuf := make([]byte, dataLength)
-	realLen, err := r.Read(keyBuf)
-	if err != nil && err != io.EOF {
-		errorWrite("Error reading request key: %s", fmt.Sprintf("error='%s'", err.Error()))
-		return nil
-	}
-	if uint32(realLen) != dataLength {
-		errorWrite("Incorrect request size: %s,%s", fmt.Sprintf("reported=%d", dataLength), fmt.Sprintf("reported=%d", realLen))
-		return nil
-	}
-
-	key := string(keyBuf)
+	key := string(keyNameBuf)
 
 	respObj, err := safeCallItemFunc(itemFunc, key)
-
-	var data []byte
 	if err != nil {
 		// Error from the agent
 		errorWrite("Error reading request key: %s,%s", fmt.Sprintf("key='%s'", key), fmt.Sprintf("error='%s'", err.Error()))
-		data = []byte("ZBX_NOTSUPPORTED\x00" + err.Error())
+		return []byte("ZBX_NOTSUPPORTED\x00" + err.Error())
 	} else if respObj == nil {
 		// No error but no reply, key not found
-		data = []byte("ZBX_NOTSUPPORTED\x00Item key unknown")
-	} else {
-		// Format the reply as a string
-		data = []byte(fmt.Sprintf("%v", respObj))
+		return []byte("ZBX_NOTSUPPORTED\x00Item key unknown")
 	}
 
-	length := len(data)
-	header := []byte("ZBXD\x01")
-	lenBuf := make([]byte, 8)
-	binary.LittleEndian.PutUint64(lenBuf, uint64(length))
-	// header + data length is 8 bytes
-	reply := make([]byte, 13+length)
-
-	i := 0
-	// Add the header
-	for _, b := range header {
-		reply[i] = b
-		i++
-	}
-	// Add the data length
-	for _, b := range lenBuf {
-		reply[i] = b
-		i++
-	}
-	// Add the data
-	for _, b := range data {
-		reply[i] = b
-		i++
-	}
-
-	return reply
+	// Format the reply as a string
+	return []byte(fmt.Sprintf("%v", respObj))
 }
 
 func safeCallItemFunc(itemFunc ItemFunc, key string) (interface{}, error) {

@@ -13,7 +13,7 @@ import (
 	"github.com/ecnepsnai/zbx"
 )
 
-const socketAddr = "127.0.0.1:8765"
+const passiveSocketAddr = "127.0.0.1:8765"
 
 func TestMain(m *testing.M) {
 	zbx.ErrorLog = io.Discard
@@ -46,9 +46,9 @@ func TestMain(m *testing.M) {
 			return nil, nil
 		}
 		return f()
-	}, socketAddr)
+	}, passiveSocketAddr)
 
-	c, err := retryDial(socketAddr)
+	c, err := retryDial(passiveSocketAddr)
 	if err != nil {
 		panic("unable to connect to socket")
 	}
@@ -71,8 +71,8 @@ func retryDial(addr string) (net.Conn, error) {
 }
 
 func requestForKey(key string) []byte {
-	length := make([]byte, 8)
-	binary.LittleEndian.PutUint64(length, uint64(len(key)))
+	lengthBuf := make([]byte, 4)
+	binary.LittleEndian.PutUint32(lengthBuf, uint32(len(key)))
 	request := make([]byte, 13+len(key))
 	header := []byte("ZBXD\x01")
 	i := 0
@@ -80,8 +80,12 @@ func requestForKey(key string) []byte {
 		request[i] = b
 		i++
 	}
-	for _, b := range length {
+	for _, b := range lengthBuf {
 		request[i] = b
+		i++
+	}
+	for x := 0; x < 4; x++ {
+		request[i] = 0x00
 		i++
 	}
 	for _, b := range []byte(key) {
@@ -107,7 +111,7 @@ func TestItemFuncNil(t *testing.T) {
 func TestAgentPing(t *testing.T) {
 	t.Parallel()
 
-	c, err := retryDial(socketAddr)
+	c, err := retryDial(passiveSocketAddr)
 	if err != nil {
 		t.Fatalf("Error connecting to zabbix agent: %s", err.Error())
 	}
@@ -127,7 +131,7 @@ func TestAgentPing(t *testing.T) {
 func TestAgentError(t *testing.T) {
 	t.Parallel()
 
-	c, err := retryDial(socketAddr)
+	c, err := retryDial(passiveSocketAddr)
 	if err != nil {
 		t.Fatalf("Error connecting to zabbix agent: %s", err.Error())
 	}
@@ -147,7 +151,7 @@ func TestAgentError(t *testing.T) {
 func TestUnknownKey(t *testing.T) {
 	t.Parallel()
 
-	c, err := retryDial(socketAddr)
+	c, err := retryDial(passiveSocketAddr)
 	if err != nil {
 		t.Fatalf("Error connecting to zabbix agent: %s", err.Error())
 	}
@@ -167,7 +171,7 @@ func TestUnknownKey(t *testing.T) {
 func TestKeyPanic(t *testing.T) {
 	t.Parallel()
 
-	c, err := retryDial(socketAddr)
+	c, err := retryDial(passiveSocketAddr)
 	if err != nil {
 		t.Fatalf("Error connecting to zabbix agent: %s", err.Error())
 	}
@@ -187,7 +191,7 @@ func TestKeyPanic(t *testing.T) {
 func TestBadHeader(t *testing.T) {
 	t.Parallel()
 
-	c, err := retryDial(socketAddr)
+	c, err := retryDial(passiveSocketAddr)
 	if err != nil {
 		t.Fatalf("Error connecting to zabbix agent: %s", err.Error())
 	}
@@ -202,11 +206,11 @@ func TestBadHeader(t *testing.T) {
 func TestBadFlags(t *testing.T) {
 	t.Parallel()
 
-	c, err := retryDial(socketAddr)
+	c, err := retryDial(passiveSocketAddr)
 	if err != nil {
 		t.Fatalf("Error connecting to zabbix agent: %s", err.Error())
 	}
-	if _, err := c.Write([]byte("ZBXD\x02")); err != nil {
+	if _, err := c.Write([]byte{0x5A, 0x42, 0x58, 0x44, 0x03}); err != nil {
 		t.Fatalf("Error writing request: %s", err.Error())
 	}
 	reply, _ := io.ReadAll(c)
@@ -238,15 +242,19 @@ func TestOversizedRequest(t *testing.T) {
 		i++
 	}
 
-	c, err := retryDial(socketAddr)
+	c, err := retryDial(passiveSocketAddr)
 	if err != nil {
 		t.Fatalf("Error connecting to zabbix agent: %s", err.Error())
 	}
 	if _, err := c.Write(request); err != nil {
 		t.Fatalf("Error writing request: %s", err.Error())
 	}
-	if _, err := io.ReadAll(c); err == nil {
-		t.Fatalf("No error seen when one expected")
+	data, err := io.ReadAll(c)
+	if err != nil {
+		t.Fatalf("Unexpected error reading data: %s", err.Error())
+	}
+	if len(data) != 0 {
+		t.Fatalf("Unexpected reply when none expected")
 	}
 }
 
@@ -273,7 +281,7 @@ func TestFalseDataLength(t *testing.T) {
 		i++
 	}
 
-	c, err := retryDial(socketAddr)
+	c, err := retryDial(passiveSocketAddr)
 	if err != nil {
 		t.Fatalf("Error connecting to zabbix agent: %s", err.Error())
 	}
